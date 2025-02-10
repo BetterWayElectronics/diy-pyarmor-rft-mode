@@ -1,6 +1,6 @@
 # DIY PyArmor RFT Mode Renamer
 
-DIY PyArmor RFT Mode Renamer is an AST-based obfuscation tool that mimics the renaming functionality of PyArmor’s RFT mode. It systematically renames function names, class names, global and local variables, builtin references, and import aliases—while preserving function argument names, keyword argument names, any identifier that starts with `__`, strings in the module attribute `__all__`, and any names you choose to exclude.
+DIY PyArmor RFT Mode is an AST-based obfuscation tool that mimics the renaming functionality of PyArmor’s RFT mode. It systematically renames function names, class names, global and local variables, builtin references, and import aliases—while preserving function argument names, keyword argument names, any identifier that starts with `__`, strings in the module attribute `__all__`, and any names you choose to exclude.
 
 The tool runs interactively:
 - It scans the current working directory for Python (`.py`) files.
