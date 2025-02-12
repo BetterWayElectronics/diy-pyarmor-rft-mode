@@ -8,9 +8,10 @@ import builtins
 import base64
 import os
 import sys
+import re
 
 ##############################################################################
-# GOTTA BE FANCY!
+# FANCY COLOURS
 ##############################################################################
 
 def print_banner() -> str:
@@ -21,7 +22,7 @@ __________          ___________
  |    |  _/\  \/ \/ /|   __)_ 
  |    |   \ \      //        \
  |______  /  \_/\_//_______  /
-    DIY \/Pyarmor RFT Mode \/ v1.0.0
+    DIY \/Pyarmor RFT Mode \/ v1.0.1
 """
     os.system("")
     faded_banner = ""
@@ -65,8 +66,8 @@ ALIAS_PREFIX = "BwE_"  # We'll override via user input
 
 def random_alias(prefix=None, length=5):
     """
-    Generate or reuse a random alias, e.g. BwE_12345. 
-    We'll allow 'prefix' to be changed by user input.
+    Generate or reuse a random alias, e.g. BwE_12345.
+    Allows 'prefix' to be changed by user input.
     """
     if prefix is None:
         prefix = ALIAS_PREFIX
@@ -98,7 +99,7 @@ class UniversalRenamer(ast.NodeTransformer):
         self.trace_log = {}    # old_name -> new_name
         self.changes = []      # (lineno, old_name, new_name)
         self.skip_all_strings = set()  # e.g. from __all__
-        self.func_params_stack = [] # A stack to hold parameter names for the current function scope
+        self.func_params_stack = []  # Holds parameter names for current function scope
 
     def _get_new_name(self, old_name, lineno=None):
         """Generate or reuse a random alias, unless excluded or starts with __."""
@@ -116,12 +117,11 @@ class UniversalRenamer(ast.NodeTransformer):
             new_alias = self.trace_log[old_name]
             if lineno is not None:
                 self.changes.append((lineno, old_name, new_alias))
-
         return self.trace_log[old_name]
 
     def visit_Assign(self, node: ast.Assign):
         """
-        If we see __all__ = ["foo", "bar"], record those strings so we skip them.
+        If we see __all__ = ["foo", "bar"], record those strings so we skip renaming them.
         """
         if (len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
@@ -138,7 +138,7 @@ class UniversalRenamer(ast.NodeTransformer):
             new_name = self._get_new_name(old_name, node.lineno)
             node.name = new_name
 
-        # Extract parameter names so they are not renamed inside the function body.
+        # Extract parameter names and push onto the stack so they are not renamed inside the body.
         param_names = set()
         if node.args:
             for arg in node.args.args:
@@ -149,16 +149,12 @@ class UniversalRenamer(ast.NodeTransformer):
                 param_names.add(arg.arg)
             if node.args.kwarg:
                 param_names.add(node.args.kwarg.arg)
-
-        # Push the set of parameter names onto the stack.
         self.func_params_stack.append(param_names)
 
-        # Temporarily remove the args so that they are not visited.
         old_args = node.args
-        node.args = None
+        node.args = None  # temporarily remove so generic_visit won't traverse them
         self.generic_visit(node)
         node.args = old_args
-
         self.func_params_stack.pop()
         return node
 
@@ -168,7 +164,6 @@ class UniversalRenamer(ast.NodeTransformer):
             new_name = self._get_new_name(old_name, node.lineno)
             node.name = new_name
 
-        # Extract parameter names.
         param_names = set()
         if node.args:
             for arg in node.args.args:
@@ -179,8 +174,8 @@ class UniversalRenamer(ast.NodeTransformer):
                 param_names.add(arg.arg)
             if node.args.kwarg:
                 param_names.add(node.args.kwarg.arg)
-
         self.func_params_stack.append(param_names)
+
         old_args = node.args
         node.args = None
         self.generic_visit(node)
@@ -193,7 +188,6 @@ class UniversalRenamer(ast.NodeTransformer):
         if not starts_with_double_underscore(old_name) and old_name not in EXCLUDE_NAMES:
             new_name = self._get_new_name(old_name, node.lineno)
             node.name = new_name
-
         self.generic_visit(node)
         return node
 
@@ -214,11 +208,10 @@ class UniversalRenamer(ast.NodeTransformer):
         return node
 
     def visit_Name(self, node: ast.Name):
-        old_id = node.id # If this name is a parameter in the current function scope, skip renaming.
-        
+        old_id = node.id
+        # If this name is a parameter in the current function scope, skip renaming.
         if self.func_params_stack and old_id in self.func_params_stack[-1]:
             return node
-
         if starts_with_double_underscore(old_id):
             return node
         if old_id in EXCLUDE_NAMES:
@@ -237,10 +230,6 @@ class UniversalRenamer(ast.NodeTransformer):
         return node
 
     def visit_Call(self, node: ast.Call):
-        """
-        Rename the function node.func, skip rewriting kwarg names, 
-        rename values in kwarg, rename normal arg expressions.
-        """
         self.visit(node.func)
         for kw in node.keywords:
             self.visit(kw.value)
@@ -248,37 +237,32 @@ class UniversalRenamer(ast.NodeTransformer):
             self.visit(arg)
         return node
 
-    """
-    For comprehension, we want to visit the generators (and their targets)
-    first so that variables used in the expression are renamed consistently.
-    """
-    def visit_DictComp(self, node: ast.DictComp):
-        node.generators = [self.visit(gen) for gen in node.generators]
-        node.key = self.visit(node.key)
-        node.value = self.visit(node.value)
-        return node
-
     def visit_ListComp(self, node: ast.ListComp):
-        node.generators = [self.visit(gen) for gen in node.generators]
-        node.elt = self.visit(node.elt)
+        for gen in node.generators:
+            self.visit(gen)
+        self.visit(node.elt)
         return node
 
     def visit_SetComp(self, node: ast.SetComp):
-        node.generators = [self.visit(gen) for gen in node.generators]
-        node.elt = self.visit(node.elt)
+        for gen in node.generators:
+            self.visit(gen)
+        self.visit(node.elt)
+        return node
+
+    def visit_DictComp(self, node: ast.DictComp):
+        for gen in node.generators:
+            self.visit(gen)
+        self.visit(node.key)
+        self.visit(node.value)
         return node
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp):
-        node.generators = [self.visit(gen) for gen in node.generators]
-        node.elt = self.visit(node.elt)
+        for gen in node.generators:
+            self.visit(gen)
+        self.visit(node.elt)
         return node
 
-##############################################################################
-# MAIN LOGIC
-##############################################################################
-
 def rename_everything(code: str):
-    """Parse code => AST => transform => unparse => (new_code, trace_log, changes)."""
     tree = ast.parse(code)
     transformer = UniversalRenamer()
     new_tree = transformer.visit(tree)
@@ -287,12 +271,6 @@ def rename_everything(code: str):
     return new_code, transformer.trace_log, transformer.changes
 
 def insert_builtin_definitions(source: str, trace_log: dict) -> str:
-    """
-    If we renamed ANY builtins from ALL_BUILTINS, insert lines at the top, e.g.:
-      import base64
-      import builtins
-      BwE_12345 = getattr(builtins, base64.b64decode("cHJpbnQ=").decode())
-    """
     import_lines = ["import base64\n", "import builtins\n"]
     definitions = []
 
@@ -316,7 +294,6 @@ def insert_builtin_definitions(source: str, trace_log: dict) -> str:
     return "".join(lines)
 
 def write_changes_log(changes_list, log_filename="trace_log.log"):
-    """Sort by line_number, then write: "Line X: old_name -> new_name"."""
     changes_sorted = sorted(changes_list, key=lambda x: x[0])
     with open(log_filename, "w", encoding="utf-8") as f:
         for (lineno, old_name, new_name) in changes_sorted:
@@ -324,7 +301,6 @@ def write_changes_log(changes_list, log_filename="trace_log.log"):
     print(f"RFT Log Saved: '{log_filename}'")
 
 def choose_py_file():
-    """Scan the current working directory for .py files and let user select one."""
     py_files = [f for f in os.listdir('.') if f.endswith('.py') and os.path.isfile(f)]
     if not py_files:
         print("\nNo .Py Files Found In Current Directory.")
@@ -345,59 +321,58 @@ def choose_py_file():
         else:
             print("\nChoice Out Of Range. Try Again.")
 
+def fix_fstring_escapes(code_str: str) -> str:
+    # First, fix colon-backslash preceding a closing quote.
+    code_str = re.sub(r'(:\\)(?=\')', r':\\\\', code_str)
+    # Next, fix any backslash preceding a {.
+    code_str = re.sub(r'\\(?=\{)', r'\\\\', code_str)
+    # Finally, fix any single backslash preceding a letter (not one of valid escapes) with double backslash.
+    code_str = re.sub(r'(?<!\\)\\(?!\\|\'|\"|n|r|t|b|f|v|a)([A-Za-z])', r'\\\\\1', code_str)
+    return code_str
+
 def main():
-    os.system("cls" if os.name == "nt" else "clear")  # Clear screen (Windows/Linux compatibility)
+    os.system("cls" if os.name == "nt" else "clear")
     from sys import stdout
     stdout.write(print_banner())
 
-    # 1) Let user pick a .py file from cwd
     infile = choose_py_file()
     if not infile:
         return
 
-    # 2) Ask user for alias prefix
     alias_input = input("Enter Alias Prefix (Press Enter For Default 'BwE_'): ")
     if alias_input.strip():
         global ALIAS_PREFIX
         ALIAS_PREFIX = alias_input.strip() + "_"
 
-    # 3) Ask user for exclude names
     exclude_input = input("Enter Names To Exclude, Comma-Separated (Or Press Enter For None): ")
     if exclude_input.strip():
         names = [n.strip() for n in exclude_input.split(",")]
         global EXCLUDE_NAMES
         EXCLUDE_NAMES = names
     else:
-        EXCLUDE_NAMES.clear()  # empty
+        EXCLUDE_NAMES.clear()
 
-    # We'll transform the file and output filename_rft.py
     base, ext = os.path.splitext(infile)
     outfile = base + "_rft.py"
     log_file = f"{base}_tracelog.log"
 
-    # 4) Read the file
     with open(infile, "r", encoding="utf-8") as f:
         code = f.read()
 
-    # 5) Do the renaming
     new_code, trace_log, changes = rename_everything(code)
-
-    # 6) Insert builtins definitions
     final_code = insert_builtin_definitions(new_code, trace_log)
+    final_code = fix_fstring_escapes(final_code)
 
-    # 7) Write output
     with open(outfile, "w", encoding="utf-8") as out:
         out.write(final_code)
 
     colors = [
-        (179, 183, 242),  # Intermediate colour 4
-        (183, 226, 240),  # Intermediate colour 5
-        (183, 226, 240)   # Light blue
+        (179, 183, 242),
+        (183, 226, 240),
+        (183, 226, 240)
     ]
     
     print(gradient_text(f"\nTransformed '{infile}' -> '{outfile}'", colors))
-
-    # 8) Write the rename log
     write_changes_log(changes, log_file)
 
 if __name__ == "__main__":
