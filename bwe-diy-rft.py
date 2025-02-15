@@ -22,7 +22,7 @@ __________          ___________
  |    |  _/\  \/ \/ /|   __)_ 
  |    |   \ \      //        \
  |______  /  \_/\_//_______  /
-    DIY \/Pyarmor RFT Mode \/ v1.0.1
+    DIY \/Pyarmor RFT Mode \/ v1.0.2
 """
     os.system("")
     faded_banner = ""
@@ -61,8 +61,8 @@ def gradient_text(text: str, colors: list) -> str:
 ##############################################################################
 
 ALL_BUILTINS = set(dir(builtins))
-EXCLUDE_NAMES = []  # We'll populate via user input
-ALIAS_PREFIX = "BwE_"  # We'll override via user input
+EXCLUDE_NAMES = []  # Populate via user input
+ALIAS_PREFIX = "BwE_"  # Override via user input
 
 def random_alias(prefix=None, length=5):
     """
@@ -102,7 +102,7 @@ class UniversalRenamer(ast.NodeTransformer):
         self.func_params_stack = []  # Holds parameter names for current function scope
 
     def _get_new_name(self, old_name, lineno=None):
-        """Generate or reuse a random alias, unless excluded or starts with __."""
+        # Generate or reuse a random alias, unless excluded or starts with __
         if starts_with_double_underscore(old_name):
             return old_name
         if old_name in EXCLUDE_NAMES:
@@ -118,11 +118,20 @@ class UniversalRenamer(ast.NodeTransformer):
             if lineno is not None:
                 self.changes.append((lineno, old_name, new_alias))
         return self.trace_log[old_name]
+        
+    def visit_Global(self, node: ast.Global):
+        # Rename each global name in the global statement.
+        new_names = []
+        for name in node.names:
+            if starts_with_double_underscore(name) or name in EXCLUDE_NAMES:
+                new_names.append(name)
+            else:
+                new_names.append(self._get_new_name(name))
+        node.names = new_names
+        return node
 
     def visit_Assign(self, node: ast.Assign):
-        """
-        If we see __all__ = ["foo", "bar"], record those strings so we skip renaming them.
-        """
+       # If we see __all__ = ["foo", "bar"], record those strings so we skip renaming them.
         if (len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
             and node.targets[0].id == "__all__"
