@@ -17,12 +17,12 @@ import re
 def print_banner() -> str:
     sys.stdout.write("\x1b[8;{rows};{cols}t".format(rows=32, cols=130))
     banner = r"""
-__________          ___________
-\______   \___  _  _\_   _____/
- |    |  _/\  \/ \/ /|   __)_ 
- |    |   \ \      //        \
- |______  /  \_/\_//_______  /
-    DIY \/Pyarmor RFT Mode \/ v1.0.2
+__________          ____________
+\______   \___  _  _\_    _____/
+ |    |  _/\  \/ \/ /|    __)_ 
+ |    |   \ \      //         \
+ |______  /  \_/\_//________  /
+    DIY \/ Pyarmor RFT Mode \/ v1.0.3
 """
     os.system("")
     faded_banner = ""
@@ -64,16 +64,22 @@ ALL_BUILTINS = set(dir(builtins))
 EXCLUDE_NAMES = []  # Populate via user input
 ALIAS_PREFIX = "BwE_"  # Override via user input
 
+# New globals for sequential aliasing
+USE_SEQUENTIAL = False
+alias_counter = 1
+
 def random_alias(prefix=None, length=5):
-    """
-    Generate or reuse a random alias, e.g. BwE_12345.
-    Allows 'prefix' to be changed by user input.
-    """
+    global alias_counter, USE_SEQUENTIAL
     if prefix is None:
         prefix = ALIAS_PREFIX
-    digits = string.digits
-    suffix = ''.join(random.choices(digits, k=length))
-    return prefix + suffix
+    if USE_SEQUENTIAL:
+        alias = f"{prefix}{alias_counter:0{length}d}"
+        alias_counter += 1
+        return alias
+    else:
+        digits = string.digits
+        suffix = ''.join(random.choices(digits, k=length))
+        return prefix + suffix
 
 def starts_with_double_underscore(name: str) -> bool:
     return name.startswith("__")
@@ -100,7 +106,6 @@ class UniversalRenamer(ast.NodeTransformer):
         self.changes = []      # (lineno, old_name, new_name)
         self.skip_all_strings = set()  # e.g. from __all__
         self.func_params_stack = []  # Holds parameter names for current function scope
-
     def _get_new_name(self, old_name, lineno=None):
         # Generate or reuse a random alias, unless excluded or starts with __
         if starts_with_double_underscore(old_name):
@@ -109,7 +114,7 @@ class UniversalRenamer(ast.NodeTransformer):
             return old_name
 
         if old_name not in self.trace_log:
-            new_alias = random_alias()  # uses global ALIAS_PREFIX
+            new_alias = random_alias()  # uses global ALIAS_PREFIX or sequential alias if enabled
             self.trace_log[old_name] = new_alias
             if lineno is not None:
                 self.changes.append((lineno, old_name, new_alias))
@@ -237,7 +242,21 @@ class UniversalRenamer(ast.NodeTransformer):
                 if old_id in ALL_BUILTINS:
                     node.id = self._get_new_name(old_id, node.lineno)
         return node
-
+        
+    def visit_Lambda(self, node: ast.Lambda):
+        param_names = set(arg.arg for arg in node.args.args)
+        if node.args.vararg:
+            param_names.add(node.args.vararg.arg)
+        for arg in node.args.kwonlyargs:
+            param_names.add(arg.arg)
+        if node.args.kwarg:
+            param_names.add(node.args.kwarg.arg)
+            
+        self.func_params_stack.append(param_names)
+        self.generic_visit(node)
+        self.func_params_stack.pop()
+        return node
+  
     def visit_Call(self, node: ast.Call):
         self.visit(node.func)
         for kw in node.keywords:
@@ -273,11 +292,29 @@ class UniversalRenamer(ast.NodeTransformer):
 
 def rename_everything(code: str):
     tree = ast.parse(code)
+    tree = remove_docstrings(tree)  # Remove docstrings from the AST
     transformer = UniversalRenamer()
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
     new_code = astunparse.unparse(new_tree)
     return new_code, transformer.trace_log, transformer.changes
+    
+def remove_docstrings(node):
+    """
+    Recursively remove docstrings from modules, classes, and functions.
+    Only removes a string literal if it is the first statement in the body.
+    Works for both ast.Str (Python <3.8) and ast.Constant (Python 3.8+).
+    """
+    if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+        first = node.body[0]
+        # For Python 3.8+, docstrings are ast.Constant nodes with a string value.
+        if (isinstance(first, ast.Expr) and 
+            ((isinstance(first.value, ast.Str)) or
+             (isinstance(first.value, ast.Constant) and isinstance(first.value.value, str)))):
+            node.body.pop(0)
+    for child in ast.iter_child_nodes(node):
+        remove_docstrings(child)
+    return node
 
 def insert_builtin_definitions(source: str, trace_log: dict) -> str:
     import_lines = ["import base64\n", "import builtins\n"]
@@ -353,6 +390,14 @@ def main():
         global ALIAS_PREFIX
         ALIAS_PREFIX = alias_input.strip() + "_"
 
+    # New prompt for sequential alias mode
+    seq_choice = input("Use Sequential Numbers Instead Of Random? (Y/N, Default N): ")
+    global USE_SEQUENTIAL
+    if seq_choice.lower().startswith('y'):
+        USE_SEQUENTIAL = True
+    else:
+        USE_SEQUENTIAL = False
+
     exclude_input = input("Enter Names To Exclude, Comma-Separated (Or Press Enter For None): ")
     if exclude_input.strip():
         names = [n.strip() for n in exclude_input.split(",")]
@@ -383,6 +428,10 @@ def main():
     
     print(gradient_text(f"\nTransformed '{infile}' -> '{outfile}'", colors))
     write_changes_log(changes, log_file)
+    
+    print("\nPress Enter to Exit...")
+    input()
+    os._exit(0)
 
 if __name__ == "__main__":
     main()
